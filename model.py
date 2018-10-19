@@ -13,6 +13,7 @@ import os
 import random
 import re
 
+import imgaug as ia
 import numpy as np
 import torch
 import torch.nn as nn
@@ -1101,7 +1102,7 @@ def compute_losses(rpn_match, rpn_bbox, rpn_class_logits, rpn_pred_bbox, target_
 #  Data Generator
 ############################################################
 
-def load_image_gt(dataset, config, image_id, augment=False,
+def load_image_gt(dataset, config, image_id, augment=None,
                   use_mini_mask=False):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
 
@@ -1126,6 +1127,7 @@ def load_image_gt(dataset, config, image_id, augment=False,
     image = dataset.load_image(image_id)
     mask, class_ids = dataset.load_mask(image_id)
     shape = image.shape
+
     image, window, scale, padding = utils.resize_image(
         image,
         min_dim=config.IMAGE_MIN_DIM,
@@ -1133,11 +1135,21 @@ def load_image_gt(dataset, config, image_id, augment=False,
         padding=config.IMAGE_PADDING)
     mask = utils.resize_mask(mask, scale, padding)
 
-    # Random horizontal flips.
-    if augment:
-        if random.randint(0, 1):
-            image = np.fliplr(image)
-            mask = np.fliplr(mask)
+    # augmentation
+    if augment is not None:
+        augment_det = augment.to_deterministic()
+        image = augment_det.augment_image(image)
+
+        mask = mask.transpose(2, 0, 1)
+
+        for i, frame in enumerate(mask):
+            mask_map = ia.SegmentationMapOnImage(frame, shape=image.shape)
+            frame_map = augment_det.augment_segmentation_maps([mask_map])[0]
+            frame_map = np.bool_(frame_map.get_arr_int())
+            
+            mask[i] = frame_map
+
+        mask = mask.transpose(1, 2, 0)
 
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
@@ -1270,7 +1282,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     return rpn_match, rpn_bbox
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, config, augment=True):
+    def __init__(self, dataset, config, augment=None):
         """A generator that returns images and corresponding target class ids,
             bounding box deltas, and masks.
 
@@ -1619,7 +1631,7 @@ class MaskRCNN(nn.Module):
         return [images, image_metas,rpn_match,rpn_bbox,gt_class_ids,gt_boxes,gt_masks]
     
 
-    def train_model(self, train_dataset, val_dataset, learning_rate, epochs,BatchSize,steps, layers):
+    def train_model(self, train_dataset, val_dataset, learning_rate, epochs,BatchSize,steps, layers, augmentation):
         """Train the model.
         train_dataset, val_dataset: Training and validation Dataset objects.
         learning_rate: The learning rate to train with
@@ -1652,7 +1664,7 @@ class MaskRCNN(nn.Module):
             layers = layer_regex[layers]
 
         # Data generators
-        train_set = Dataset(train_dataset, self.config, augment=True)
+        train_set = Dataset(train_dataset, self.config, augment=augmentation)
         train_generator = torch.utils.data.DataLoader(train_set, batch_size=BatchSize,collate_fn=self.collate_custom, shuffle=True, num_workers=1)
 
         # Train
