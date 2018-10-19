@@ -23,13 +23,17 @@ def pth_nms(dets, thresh):
 
     return keep[:num_out[0]]
   else:
+    dets_device = dets.device
+    dets = dets.to(device=torch.device('cuda:0'))
+
     x1 = dets[:, 1]
     y1 = dets[:, 0]
     x2 = dets[:, 3]
     y2 = dets[:, 2]
     scores = dets[:, 4]
 
-    dets_temp = torch.FloatTensor(dets.size()).cuda()
+    # dets_temp = torch.FloatTensor(dets.size()).cuda()
+    dets_temp = torch.zeros_like(dets)
     dets_temp[:, 0] = dets[:, 1]
     dets_temp[:, 1] = dets[:, 0]
     dets_temp[:, 2] = dets[:, 3]
@@ -42,12 +46,16 @@ def pth_nms(dets, thresh):
 
     dets = dets[order].contiguous()
 
-    keep = torch.LongTensor(dets.size(0))
-    num_out = torch.LongTensor(1)
+    # keep = torch.LongTensor(dets.size(0)).to(device=dets.device)
+    # num_out = torch.LongTensor(1).to(device=dets.device)
     # keep = torch.cuda.LongTensor(dets.size(0))
     # num_out = torch.cuda.LongTensor(1)
+    keep = torch.zeros(dets.size(0), dtype=torch.long)
+    num_out = torch.zeros(1, dtype=torch.long)
     nms.gpu_nms(keep, num_out, dets_temp, thresh)
 
-    return order[keep[:num_out[0]].cuda()].contiguous()
+    dets = dets.to(dets_device)
+
+    return order[keep[:num_out[0]].cuda(device=dets_device)].contiguous()
     # return order[keep[:num_out[0]]].contiguous()
 

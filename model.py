@@ -79,7 +79,7 @@ def unique1d(tensor):
     unique_bool = tensor[1:] != tensor [:-1]
     first_element = Variable(torch.ByteTensor([True]), requires_grad=False)
     if tensor.is_cuda:
-        first_element = first_element.cuda()
+        first_element = first_element.cuda(device=tensor.device)
     unique_bool = torch.cat((first_element, unique_bool),dim=0)
     return tensor[unique_bool.data]
 
@@ -92,7 +92,7 @@ def log2(x):
     """Implementatin of Log2. Pytorch doesn't have a native implemenation."""
     ln2 = Variable(torch.log(torch.FloatTensor([2.0])), requires_grad=False)
     if x.is_cuda:
-        ln2 = ln2.cuda()
+        ln2 = ln2.cuda(device=x.device)
     return torch.log(x) / ln2
 
 ############################################################
@@ -323,7 +323,7 @@ def proposal_generator(inputs, proposal_count, nms_threshold, anchors, config=No
     deltas = inputs[1]
     std_dev = Variable(torch.from_numpy(np.reshape(config.RPN_BBOX_STD_DEV, [1, 4])).float(), requires_grad=False)
     if config.GPU_COUNT:
-        std_dev = std_dev.cuda()
+        std_dev = std_dev.cuda(device=deltas.device)
     deltas = deltas * std_dev
 
     # Improve performance by trimming to top anchors by score
@@ -356,7 +356,7 @@ def proposal_generator(inputs, proposal_count, nms_threshold, anchors, config=No
     # Normalize dimensions to range of 0 to 1.
     norm = Variable(torch.from_numpy(np.array([height, width, height, width])).float(), requires_grad=False)
     if config.GPU_COUNT:
-        norm = norm.cuda()
+        norm = norm.cuda(device=boxes.device)
     normalized_boxes = boxes / norm
 
     # Add back batch dimension
@@ -409,7 +409,7 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
     # e.g. a 224x224 ROI (in pixels) maps to P4
     image_area = Variable(torch.FloatTensor([float(image_shape[0]*image_shape[1])]), requires_grad=False)
     if boxes.is_cuda:
-        image_area = image_area.cuda()
+        image_area = image_area.cuda(device=boxes.device)
     roi_level = 4 + log2(torch.sqrt(h*w)/(224.0/torch.sqrt(image_area)))
     roi_level = roi_level.round().int()
     roi_level = roi_level.clamp(2,5)
@@ -442,7 +442,7 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
         # Result: [batch * num_boxes, pool_height, pool_width, channels]
         ind = Variable(torch.zeros(level_boxes.size()[0]),requires_grad=False).int()
         if level_boxes.is_cuda:
-            ind = ind.cuda()
+            ind = ind.cuda(device=level_boxes.device)
         feature_maps[i] = feature_maps[i].unsqueeze(0)  #CropAndResizeFunction needs batch dimension
         pooled_features = CropAndResizeFunction(pool_size, pool_size, 0)(feature_maps[i], level_boxes, ind)
         pooled.append(pooled_features)
@@ -485,7 +485,7 @@ def bbox_overlaps(boxes1, boxes2):
     x2 = torch.min(b1_x2, b2_x2)[:, 0]
     zeros = Variable(torch.zeros(y1.size()[0]), requires_grad=False)
     if y1.is_cuda:
-        zeros = zeros.cuda()
+        zeros = zeros.cuda(device=y1.device)
     intersection = torch.max(x2 - x1, zeros) * torch.max(y2 - y1, zeros)
 
     # 3. Compute unions
@@ -549,7 +549,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     else:
         no_crowd_bool =  Variable(torch.ByteTensor(proposals.size()[0]*[True]), requires_grad=False)
         if config.GPU_COUNT:
-            no_crowd_bool = no_crowd_bool.cuda()
+            no_crowd_bool = no_crowd_bool.cuda(device=proposals.device)
 
     # Compute overlaps matrix [proposals, gt_boxes]
     overlaps = bbox_overlaps(proposals, gt_boxes)
@@ -570,7 +570,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         rand_idx = torch.randperm(positive_indices.size()[0])
         rand_idx = rand_idx[:positive_count]
         if config.GPU_COUNT:
-            rand_idx = rand_idx.cuda()
+            rand_idx = rand_idx.cuda(device=proposals.device)
         positive_indices = positive_indices[rand_idx]
         positive_count = positive_indices.size()[0]
         positive_rois = proposals[positive_indices.data,:]
@@ -585,7 +585,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         deltas = Variable(utils.box_refinement(positive_rois.data, roi_gt_boxes.data), requires_grad=False)
         std_dev = Variable(torch.from_numpy(config.BBOX_STD_DEV).float(), requires_grad=False)
         if config.GPU_COUNT:
-            std_dev = std_dev.cuda()
+            std_dev = std_dev.cuda(device=proposals.device)
         deltas /= std_dev
 
         # Assign positive ROIs to GT masks
@@ -607,7 +607,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
             boxes = torch.cat([y1, x1, y2, x2], dim=1)
         box_ids = Variable(torch.arange(roi_masks.size()[0]), requires_grad=False).int()
         if config.GPU_COUNT:
-            box_ids = box_ids.cuda()
+            box_ids = box_ids.cuda(device=boxes.device)
         masks = Variable(CropAndResizeFunction(config.MASK_SHAPE[0], config.MASK_SHAPE[1], 0)(roi_masks.unsqueeze(1), boxes, box_ids).data, requires_grad=False)
         masks = masks.squeeze(1)
 
@@ -628,7 +628,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         rand_idx = torch.randperm(negative_indices.size()[0])
         rand_idx = rand_idx[:negative_count]
         if config.GPU_COUNT:
-            rand_idx = rand_idx.cuda()
+            rand_idx = rand_idx.cuda(device=boxes.device)
         negative_indices = negative_indices[rand_idx]
         negative_count = negative_indices.size()[0]
         negative_rois = proposals[negative_indices.data, :]
@@ -641,15 +641,15 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         rois = torch.cat((positive_rois, negative_rois), dim=0)
         zeros = Variable(torch.zeros(negative_count), requires_grad=False).int()
         if config.GPU_COUNT:
-            zeros = zeros.cuda()
+            zeros = zeros.cuda(device=boxes.device)
         roi_gt_class_ids = torch.cat([roi_gt_class_ids, zeros], dim=0)
         zeros = Variable(torch.zeros(negative_count,4), requires_grad=False)
         if config.GPU_COUNT:
-            zeros = zeros.cuda()
+            zeros = zeros.cuda(device=boxes.device)
         deltas = torch.cat([deltas, zeros], dim=0)
         zeros = Variable(torch.zeros(negative_count,config.MASK_SHAPE[0],config.MASK_SHAPE[1]), requires_grad=False)
         if config.GPU_COUNT:
-            zeros = zeros.cuda()
+            zeros = zeros.cuda(device=boxes.device)
         masks = torch.cat([masks, zeros], dim=0)
     elif positive_count > 0:
         rois = positive_rois
@@ -657,15 +657,15 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         rois = negative_rois
         zeros = Variable(torch.zeros(negative_count), requires_grad=False)
         if config.GPU_COUNT:
-            zeros = zeros.cuda()
+            zeros = zeros.cuda(device=boxes.device)
         roi_gt_class_ids = zeros
         zeros = Variable(torch.zeros(negative_count,4), requires_grad=False).int()
         if config.GPU_COUNT:
-            zeros = zeros.cuda()
+            zeros = zeros.cuda(device=boxes.device)
         deltas = zeros
         zeros = Variable(torch.zeros(negative_count,config.MASK_SHAPE[0],config.MASK_SHAPE[1]), requires_grad=False)
         if config.GPU_COUNT:
-            zeros = zeros.cuda()
+            zeros = zeros.cuda(device=boxes.device)
         masks = zeros
     else:
         rois = Variable(torch.FloatTensor(), requires_grad=False)
@@ -673,10 +673,10 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         deltas = Variable(torch.FloatTensor(), requires_grad=False)
         masks = Variable(torch.FloatTensor(), requires_grad=False)
         if config.GPU_COUNT:
-            rois = rois.cuda()
-            roi_gt_class_ids = roi_gt_class_ids.cuda()
-            deltas = deltas.cuda()
-            masks = masks.cuda()
+            rois = rois.cuda(device=proposals.device)
+            roi_gt_class_ids = roi_gt_class_ids.cuda(device=proposals.device)
+            deltas = deltas.cuda(device=proposals.device)
+            masks = masks.cuda(device=proposals.device)
 
     return rois, roi_gt_class_ids, deltas, masks
 
@@ -719,7 +719,7 @@ def refine_detections(rois, probs, deltas, window, config):
     # Class-specific bounding box deltas
     idx = torch.arange(class_ids.size()[0]).long()
     if config.GPU_COUNT:
-        idx = idx.cuda()
+        idx = idx.cuda(device=rois.device)
     class_scores = probs[idx, class_ids.data]
     deltas_specific = deltas[idx, class_ids.data]
 
@@ -727,14 +727,14 @@ def refine_detections(rois, probs, deltas, window, config):
     # Shape: [boxes, (y1, x1, y2, x2)] in normalized coordinates
     std_dev = Variable(torch.from_numpy(np.reshape(config.RPN_BBOX_STD_DEV, [1, 4])).float(), requires_grad=False)
     if config.GPU_COUNT:
-        std_dev = std_dev.cuda()
+        std_dev = std_dev.cuda(device=rois.device)
     refined_rois = apply_box_deltas(rois, deltas_specific * std_dev)
 
     # Convert coordiates to image domain
     height, width = config.IMAGE_SHAPE[:2]
     scale = Variable(torch.from_numpy(np.array([height, width, height, width])).float(), requires_grad=False)
     if config.GPU_COUNT:
-        scale = scale.cuda()
+        scale = scale.cuda(device=rois.device)
     refined_rois *= scale
 
     # Clip boxes to image window
@@ -1023,7 +1023,7 @@ def compute_mrcnn_class_loss(target_class_ids, pred_class_logits):
     else:
         loss = Variable(torch.FloatTensor([0]), requires_grad=False)
         if target_class_ids.is_cuda:
-            loss = loss.cuda()
+            loss = loss.cuda(device=target_class_ids.device)
 
     return loss
 
@@ -1052,7 +1052,7 @@ def compute_mrcnn_bbox_loss(target_bbox, target_class_ids, pred_bbox):
     else:
         loss = Variable(torch.FloatTensor([0]), requires_grad=False)
         if target_class_ids.is_cuda:
-            loss = loss.cuda()
+            loss = loss.cuda(device=target_class_ids.device)
 
     return loss
 
@@ -1082,7 +1082,7 @@ def compute_mrcnn_mask_loss(target_masks, target_class_ids, pred_masks):
     else:
         loss = Variable(torch.FloatTensor([0]), requires_grad=False)
         if target_class_ids.is_cuda:
-            loss = loss.cuda()
+            loss = loss.cuda(device=target_class_ids.device)
 
     return loss
 
@@ -1367,7 +1367,7 @@ class MaskRCNN(nn.Module):
     """Encapsulates the Mask RCNN model functionality.
     """
 
-    def __init__(self, config, model_dir):
+    def __init__(self, config, model_dir, device):
         """
         config: A Sub-class of the Config class
         model_dir: Directory to save training logs and trained weights
@@ -1375,6 +1375,7 @@ class MaskRCNN(nn.Module):
         super(MaskRCNN, self).__init__()
         self.config = config
         self.model_dir = model_dir
+        self.device = device
         self.set_log_dir()
         self.build(config=config)
         self.initialize_weights()
@@ -1409,7 +1410,7 @@ class MaskRCNN(nn.Module):
                                                                                 config.BACKBONE_STRIDES,
                                                                                 config.RPN_ANCHOR_STRIDE)).float(), requires_grad=False)
         if self.config.GPU_COUNT:
-            self.anchors = self.anchors.cuda()
+            self.anchors = self.anchors.to(device=self.device)
 
         # RPN
         self.rpn = RPN(len(config.RPN_ANCHOR_RATIOS), config.RPN_ANCHOR_STRIDE, 256)
@@ -1688,11 +1689,12 @@ class MaskRCNN(nn.Module):
                 loss=0
                 images,image_metas_batch,rpn_match_batch,rpn_bbox_batch,gt_class_ids_batch,gt_boxes_batch,gt_masks_batch = inputs
                 # from list to tensor
-                images = torch.stack(images).cuda()              
+                images = torch.stack(images)             
+                images = images.to(device=self.device) 
 
                 # Feature extraction
                 [p2_out, p3_out, p4_out, p5_out, p6_out] = self.fpn(images)
-
+                
                 # Note that P6 is used in RPN, but not in the classifier heads.
                 rpn_feature_maps = [p2_out, p3_out, p4_out, p5_out, p6_out]
 
@@ -1748,12 +1750,12 @@ class MaskRCNN(nn.Module):
                         
                         # GPU or CPU
                         if self.config.GPU_COUNT:
-                            images = images.cuda()
-                            rpn_match = rpn_match.cuda()
-                            rpn_bbox = rpn_bbox.cuda()
-                            gt_class_ids = gt_class_ids.cuda()
-                            gt_boxes = gt_boxes.cuda()
-                            gt_masks = gt_masks.cuda()
+                            images = images.to(device=self.device)
+                            rpn_match = rpn_match.to(device=self.device)
+                            rpn_bbox = rpn_bbox.to(device=self.device)
+                            gt_class_ids = gt_class_ids.to(device=self.device)
+                            gt_boxes = gt_boxes.to(device=self.device)
+                            gt_masks = gt_masks.to(device=self.device)
                         
                         # compute rpn_rois
                         rpn_rois = proposal_generator([rpn_class, rpn_pred_bbox],
@@ -1766,7 +1768,7 @@ class MaskRCNN(nn.Module):
                         h, w = self.config.IMAGE_SHAPE[:2]
                         scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
                         if self.config.GPU_COUNT:
-                            scale = scale.cuda()
+                            scale = scale.cuda(device=self.device)
                         gt_boxes = gt_boxes / scale
 
                         # Generate detection targets
@@ -1782,10 +1784,10 @@ class MaskRCNN(nn.Module):
                             mrcnn_bbox = Variable(torch.FloatTensor())
                             mrcnn_mask = Variable(torch.FloatTensor())
                             if self.config.GPU_COUNT:
-                                mrcnn_class_logits = mrcnn_class_logits.cuda()
-                                mrcnn_class = mrcnn_class.cuda()
-                                mrcnn_bbox = mrcnn_bbox.cuda()
-                                mrcnn_mask = mrcnn_mask.cuda()
+                                mrcnn_class_logits = mrcnn_class_logits.cuda(device=self.device)
+                                mrcnn_class = mrcnn_class.cuda(device=self.device)
+                                mrcnn_bbox = mrcnn_bbox.cuda(device=self.device)
+                                mrcnn_mask = mrcnn_mask.cuda(device=self.device)
                         else:
                             # Network Heads
                             # Proposal classifier and BBox regressor heads
@@ -1876,7 +1878,7 @@ class MaskRCNN(nn.Module):
             h, w = self.config.IMAGE_SHAPE[:2]
             scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
             if self.config.GPU_COUNT:
-                scale = scale.cuda()
+                scale = scale.cuda(device=self.device)
             detection_boxes = detections[:, :4] / scale
 
             # Add back batch dimension
@@ -1901,7 +1903,7 @@ class MaskRCNN(nn.Module):
             h, w = self.config.IMAGE_SHAPE[:2]
             scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
             if self.config.GPU_COUNT:
-                scale = scale.cuda()
+                scale = scale.cuda(device=self.device)
             gt_boxes = gt_boxes / scale
 
             # Generate detection targets
@@ -1917,10 +1919,10 @@ class MaskRCNN(nn.Module):
                 mrcnn_bbox = Variable(torch.FloatTensor())
                 mrcnn_mask = Variable(torch.FloatTensor())
                 if self.config.GPU_COUNT:
-                    mrcnn_class_logits = mrcnn_class_logits.cuda()
-                    mrcnn_class = mrcnn_class.cuda()
-                    mrcnn_bbox = mrcnn_bbox.cuda()
-                    mrcnn_mask = mrcnn_mask.cuda()
+                    mrcnn_class_logits = mrcnn_class_logits.cuda(device=self.device)
+                    mrcnn_class = mrcnn_class.cuda(device=self.device)
+                    mrcnn_bbox = mrcnn_bbox.cuda(device=self.device)
+                    mrcnn_mask = mrcnn_mask.cuda(device=self.device)
             else:
                 # Network Heads
                 # Proposal classifier and BBox regressor heads
