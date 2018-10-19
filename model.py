@@ -1397,6 +1397,7 @@ class MaskRCNN(nn.Module):
     def build(self, config):
         """Build Mask R-CNN architecture.
         """
+        self.aps = []
 
         # Image size must be dividable by 2 multiple times
         h, w = config.IMAGE_SHAPE[:2]
@@ -1570,7 +1571,7 @@ class MaskRCNN(nn.Module):
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
 
-    def detect(self, images, device):
+    def detect(self, images):
         """Runs the detection pipeline.
 
         images: List of images, potentially of different sizes.
@@ -1590,7 +1591,7 @@ class MaskRCNN(nn.Module):
 
         # To GPU
         if self.config.GPU_COUNT:
-            molded_images = molded_images.to(device)
+            molded_images = molded_images.to(self.device)
 
         # Wrap in variable
         with torch.no_grad():
@@ -1664,8 +1665,33 @@ class MaskRCNN(nn.Module):
             layers = layer_regex[layers]
 
         # Data generators
-        train_set = Dataset(train_dataset, self.config, augment=augmentation)
-        train_generator = torch.utils.data.DataLoader(train_set, batch_size=BatchSize,collate_fn=self.collate_custom, shuffle=True, num_workers=1)
+        train_set = Dataset(
+            train_dataset,
+            self.config,
+            augment=augmentation
+        )
+        train_generator = torch.utils.data.DataLoader(
+            train_set,
+            batch_size=BatchSize,
+            collate_fn=self.collate_custom,
+            shuffle=True,
+            num_workers=1
+        )
+
+        '''
+        val_set = Dataset(
+            val_dataset,
+            self.config,
+            augment=None
+        )
+        val_generator = torch.utils.data.DataLoader(
+            val_set,
+            batch_size=BatchSize,
+            collate_fn=self.collate_custom,
+            shuffle=False,
+            num_workers=1
+        )
+        '''
 
         # Train
         log("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
@@ -1695,6 +1721,9 @@ class MaskRCNN(nn.Module):
             log("Epoch {}/{}.".format(epoch,epochs))
             epoch_loss = 0
             step = 0
+
+            # training mode
+            self.train()
 
             for inputs in train_generator:
                 optimizer.zero_grad()
@@ -1827,6 +1856,38 @@ class MaskRCNN(nn.Module):
                     # save model
                     torch.save(self.state_dict(), self.checkpoint_path.format(epoch))
                     break
+
+            # online val
+            self.eval()
+
+            epoch_aps = []
+            image_ids = val_dataset.image_ids
+
+            for image_id in image_ids:
+                image, image_meta, gt_class_id, gt_bbox, gt_mask = load_image_gt(
+                    val_dataset,
+                    self.config,
+                    image_id
+                )
+
+                results = self.detect([image])
+                r = results[0]
+
+                ap = utils.compute_ap_range(
+                    gt_boxes,
+                    gt_class_ids,
+                    gt_masks,
+                    r['rois'],
+                    r['class_ids'],
+                    r['scores'],
+                    r['masks'],
+                    iou_thresholds=[0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75]
+                )
+
+                epoch_aps.append(ap)
+
+            self.aps.append(epoch_aps)
+            print('===> Epoch {} Eval: mAP: {:.4f}'.format(epoch, np.mean(epoch_aps)))
 
         self.epoch = epochs
 
@@ -1969,6 +2030,7 @@ class MaskRCNN(nn.Module):
                 min_dim=self.config.IMAGE_MIN_DIM,
                 max_dim=self.config.IMAGE_MAX_DIM,
                 padding=self.config.IMAGE_PADDING)
+            print('m', molded_image.shape)
             molded_image = mold_image(molded_image, self.config)
             # Build image_meta
             image_meta = compose_image_meta(
