@@ -1857,38 +1857,6 @@ class MaskRCNN(nn.Module):
                     torch.save(self.state_dict(), self.checkpoint_path.format(epoch))
                     break
 
-            # online val
-            self.eval()
-
-            epoch_aps = []
-            image_ids = val_dataset.image_ids
-
-            for image_id in image_ids:
-                image, image_meta, gt_class_id, gt_bbox, gt_mask = load_image_gt(
-                    val_dataset,
-                    self.config,
-                    image_id
-                )
-
-                results = self.detect([image])
-                r = results[0]
-
-                ap = utils.compute_ap_range(
-                    gt_boxes,
-                    gt_class_ids,
-                    gt_masks,
-                    r['rois'],
-                    r['class_ids'],
-                    r['scores'],
-                    r['masks'],
-                    iou_thresholds=[0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75]
-                )
-
-                epoch_aps.append(ap)
-
-            self.aps.append(epoch_aps)
-            print('===> Epoch {} Eval: mAP: {:.4f}'.format(epoch, np.mean(epoch_aps)))
-
         self.epoch = epochs
 
     def predict(self, input, mode):
