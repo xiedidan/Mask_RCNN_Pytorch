@@ -750,7 +750,11 @@ def refine_detections(rois, probs, deltas, window, config):
     # Filter out low confidence boxes
     if config.DETECTION_MIN_CONFIDENCE:
         keep_bool = keep_bool & (class_scores >= config.DETECTION_MIN_CONFIDENCE)
-    keep = torch.nonzero(keep_bool)[:,0]
+
+    if len(torch.nonzero(keep_bool)) == 0:
+        return None
+    else:
+        keep = torch.nonzero(keep_bool)[:, 0]
 
     # Apply per-class NMS
     pre_nms_class_ids = class_ids[keep.data]
@@ -1600,6 +1604,9 @@ class MaskRCNN(nn.Module):
         # Run object detection
         detections, mrcnn_mask = self.predict([molded_images, image_metas], mode='inference')
 
+        if detections is None:
+            return None
+
         # Convert to numpy
         detections = detections.data.cpu().numpy()
         mrcnn_mask = mrcnn_mask.permute(0, 1, 3, 4, 2).data.cpu().numpy()
@@ -1725,6 +1732,8 @@ class MaskRCNN(nn.Module):
             # training mode
             self.train()
 
+            epoch_len = len(train_generator)
+
             for inputs in train_generator:
                 optimizer.zero_grad()
                 loss=0
@@ -1762,7 +1771,8 @@ class MaskRCNN(nn.Module):
                 proposal_count = self.config.POST_NMS_ROIS_TRAINING
 
                 # compute the losses for each batch
-                for i in range(BatchSize):
+                batch_len = len(image_metas_batch)
+                for i in range(batch_len):
                         # from list to tensor
                         image_metas=image_metas_batch[i]
                         rpn_class_logits=rpn_class_logits_batch[i]
@@ -1851,7 +1861,7 @@ class MaskRCNN(nn.Module):
                 epoch_loss += loss.item()
                 print("===> Epoch[{}]({}/{}): Loss: {:.4f}".format(epoch, step, steps, loss.item()))
                 step=step+1
-                if step%steps==0:
+                if step%epoch_len==0:
                     print("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch, epoch_loss / steps))
                     # save model
                     torch.save(self.state_dict(), self.checkpoint_path.format(epoch))
@@ -1915,6 +1925,9 @@ class MaskRCNN(nn.Module):
             # Detections
             # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in image coordinates
             detections = detection_layer(self.config, rpn_rois, mrcnn_class, mrcnn_bbox, image_metas)
+
+            if detections is None:
+                return (None, None)
 
             h, w = self.config.IMAGE_SHAPE[:2]
             scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
@@ -1998,7 +2011,7 @@ class MaskRCNN(nn.Module):
                 min_dim=self.config.IMAGE_MIN_DIM,
                 max_dim=self.config.IMAGE_MAX_DIM,
                 padding=self.config.IMAGE_PADDING)
-            print('m', molded_image.shape)
+
             molded_image = mold_image(molded_image, self.config)
             # Build image_meta
             image_meta = compose_image_meta(

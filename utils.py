@@ -678,7 +678,7 @@ def compute_ap(gt_boxes, gt_class_ids, gt_masks,
 
 def compute_ap_range(gt_box, gt_class_id, gt_mask,
                      pred_box, pred_class_id, pred_score, pred_mask,
-                     iou_thresholds=None, verbose=1):
+                     iou_thresholds=None, verbose=False):
     """Compute AP over a range or IoU thresholds. Default range is 0.5-0.95."""
     # Default is 0.5 to 0.95 with increments of 0.05
     iou_thresholds = iou_thresholds or np.arange(0.5, 1.0, 0.05)
