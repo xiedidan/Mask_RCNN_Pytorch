@@ -12,6 +12,7 @@ import math
 import os
 import random
 import re
+from tqdm import tqdm
 
 import imgaug as ia
 import numpy as np
@@ -1237,11 +1238,17 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     # Subsample to balance positive and negative anchors
     # Don't let positives be more than half the anchors
     ids = np.where(rpn_match == 1)[0]
-    extra = len(ids) - (config.RPN_TRAIN_ANCHORS_PER_IMAGE // 2)
+
+    if (len(ids) == 1) and ids[0] == 0:
+        extra = len(ids)
+    else:
+        extra = len(ids) - (config.RPN_TRAIN_ANCHORS_PER_IMAGE // 2)
+
     if extra > 0:
         # Reset the extra ones to neutral
         ids = np.random.choice(ids, extra, replace=False)
         rpn_match[ids] = 0
+
     # Same for negative proposals
     ids = np.where(rpn_match == -1)[0]
     extra = len(ids) - (config.RPN_TRAIN_ANCHORS_PER_IMAGE -
@@ -1341,8 +1348,10 @@ class Dataset(torch.utils.data.Dataset):
         # Skip images that have no instances. This can happen in cases
         # where we train on a subset of classes and the image doesn't
         # have any of the classes we care about.
-        if not np.any(gt_class_ids > 0):
-            return None
+        
+        # Do not skip bg samples in medical projects
+        # if not np.any(gt_class_ids > 0):
+        #    return None
 
         # RPN Targets
         rpn_match, rpn_bbox = build_rpn_targets(image.shape, self.anchors,
@@ -1392,17 +1401,18 @@ class MaskRCNN(nn.Module):
         self.config = config
         self.model_dir = model_dir
         self.device = device
+        
         self.set_log_dir()
         self.build(config=config)
         self.initialize_weights()
+        self.load_states()
+
         self.loss_history = []
-        self.val_loss_history = []
+        self.val_map_history = []
 
     def build(self, config):
         """Build Mask R-CNN architecture.
         """
-        self.aps = []
-
         # Image size must be dividable by 2 multiple times
         h, w = config.IMAGE_SHAPE[:2]
         if h / 2**6 != int(h / 2**6) or w / 2**6 != int(w / 2**6):
@@ -1508,6 +1518,8 @@ class MaskRCNN(nn.Module):
         self.checkpoint_path = self.checkpoint_path.replace(
             "*epoch*", "{:04d}")
 
+        self.state_path = os.path.join(self.log_dir, 'mask_rcnn_{}_states.pth'.format(self.config.NAME.lower()))
+
     def find_last(self):
         """Finds the last checkpoint file of the last trained model in the
         model directory.
@@ -1532,6 +1544,12 @@ class MaskRCNN(nn.Module):
             return dir_name, None
         checkpoint = os.path.join(dir_name, checkpoints[-1])
         return dir_name, checkpoint
+
+    def load_states(self):
+        if (os.path.exists(self.state_path)):
+            states = torch.load(self.state_path)
+            self.loss_history = states.loss_history
+            self.val_map_history = states.val_map_history
 
     def load_weights(self, filepath):
         """Modified version of the correspoding Keras function with
@@ -1685,21 +1703,6 @@ class MaskRCNN(nn.Module):
             num_workers=1
         )
 
-        '''
-        val_set = Dataset(
-            val_dataset,
-            self.config,
-            augment=None
-        )
-        val_generator = torch.utils.data.DataLoader(
-            val_set,
-            batch_size=BatchSize,
-            collate_fn=self.collate_custom,
-            shuffle=False,
-            num_workers=1
-        )
-        '''
-
         # Train
         log("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
         log("Checkpoint Path: {}".format(self.checkpoint_path))
@@ -1725,7 +1728,7 @@ class MaskRCNN(nn.Module):
         
         # Training 
         for epoch in range(self.epoch+1, epochs+1):
-            log("Epoch {}/{}.".format(epoch,epochs))
+            log("\nEpoch {}/{} Training".format(epoch,epochs))
             epoch_loss = 0
             step = 0
 
@@ -1734,7 +1737,7 @@ class MaskRCNN(nn.Module):
 
             epoch_len = len(train_generator)
 
-            for inputs in train_generator:
+            for inputs in tqdm(train_generator):
                 optimizer.zero_grad()
                 loss=0
                 images,image_metas_batch,rpn_match_batch,rpn_bbox_batch,gt_class_ids_batch,gt_boxes_batch,gt_masks_batch = inputs
@@ -1773,99 +1776,161 @@ class MaskRCNN(nn.Module):
                 # compute the losses for each batch
                 batch_len = len(image_metas_batch)
                 for i in range(batch_len):
-                        # from list to tensor
-                        image_metas=image_metas_batch[i]
-                        rpn_class_logits=rpn_class_logits_batch[i]
-                        rpn_class=rpn_class_batch[i]
-                        rpn_match=rpn_match_batch[i]
-                        rpn_bbox=rpn_bbox_batch[i]
-                        rpn_pred_bbox=rpn_pred_bbox_batch[i]
-                        gt_class_ids=gt_class_ids_batch[i]
-                        gt_boxes=gt_boxes_batch[i]
-                        gt_masks=gt_masks_batch[i]
-                        
-                        # add the batch dimension
-                        image_metas=image_metas.unsqueeze(0)
-                        rpn_class_logits=rpn_class_logits.unsqueeze(0)
-                        rpn_class=rpn_class.unsqueeze(0)
-                        rpn_match=rpn_match.unsqueeze(0)
-                        rpn_bbox=rpn_bbox.unsqueeze(0)
-                        rpn_pred_bbox=rpn_pred_bbox.unsqueeze(0)
-                        gt_class_ids=gt_class_ids.unsqueeze(0)
-                        gt_boxes=gt_boxes.unsqueeze(0)
-                        gt_masks=gt_masks.unsqueeze(0)
+                    # from list to tensor
+                    image_metas=image_metas_batch[i]
+                    rpn_class_logits=rpn_class_logits_batch[i]
+                    rpn_class=rpn_class_batch[i]
+                    rpn_match=rpn_match_batch[i]
+                    rpn_bbox=rpn_bbox_batch[i]
+                    rpn_pred_bbox=rpn_pred_bbox_batch[i]
+                    gt_class_ids=gt_class_ids_batch[i]
+                    gt_boxes=gt_boxes_batch[i]
+                    gt_masks=gt_masks_batch[i]
+                    
+                    # add the batch dimension
+                    image_metas=image_metas.unsqueeze(0)
+                    rpn_class_logits=rpn_class_logits.unsqueeze(0)
+                    rpn_class=rpn_class.unsqueeze(0)
+                    rpn_match=rpn_match.unsqueeze(0)
+                    rpn_bbox=rpn_bbox.unsqueeze(0)
+                    rpn_pred_bbox=rpn_pred_bbox.unsqueeze(0)
+                    gt_class_ids=gt_class_ids.unsqueeze(0)
+                    gt_boxes=gt_boxes.unsqueeze(0)
+                    gt_masks=gt_masks.unsqueeze(0)
 
-                        
-                        # image_metas as numpy array
-                        image_metas = image_metas.numpy()
-                        
-                        # GPU or CPU
+                    
+                    # image_metas as numpy array
+                    image_metas = image_metas.numpy()
+                    
+                    # GPU or CPU
+                    if self.config.GPU_COUNT:
+                        images = images.to(device=self.device)
+                        rpn_match = rpn_match.to(device=self.device)
+                        rpn_bbox = rpn_bbox.to(device=self.device)
+                        gt_class_ids = gt_class_ids.to(device=self.device)
+                        gt_boxes = gt_boxes.to(device=self.device)
+                        gt_masks = gt_masks.to(device=self.device)
+                    
+                    # compute rpn_rois
+                    rpn_rois = proposal_generator([rpn_class, rpn_pred_bbox],
+                                proposal_count=proposal_count,
+                                nms_threshold=self.config.RPN_NMS_THRESHOLD,
+                                anchors=self.anchors,
+                                config=self.config)
+                    
+                    # Normalize coordinates
+                    h, w = self.config.IMAGE_SHAPE[:2]
+                    scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
+                    if self.config.GPU_COUNT:
+                        scale = scale.cuda(device=self.device)
+                    gt_boxes = gt_boxes / scale
+
+                    # Generate detection targets
+                    # Subsamples proposals and generates target outputs for training
+                    # Note that proposal class IDs, gt_boxes, and gt_masks are zero
+                    # padded. Equally, returned rois and targets are zero padded.
+                    rois, target_class_ids, target_deltas, target_mask = \
+                        detection_target_layer(rpn_rois, gt_class_ids, gt_boxes, gt_masks, self.config)
+
+                    if not rois.size()[0]:
+                        mrcnn_class_logits = Variable(torch.FloatTensor())
+                        mrcnn_class = Variable(torch.IntTensor())
+                        mrcnn_bbox = Variable(torch.FloatTensor())
+                        mrcnn_mask = Variable(torch.FloatTensor())
                         if self.config.GPU_COUNT:
-                            images = images.to(device=self.device)
-                            rpn_match = rpn_match.to(device=self.device)
-                            rpn_bbox = rpn_bbox.to(device=self.device)
-                            gt_class_ids = gt_class_ids.to(device=self.device)
-                            gt_boxes = gt_boxes.to(device=self.device)
-                            gt_masks = gt_masks.to(device=self.device)
+                            mrcnn_class_logits = mrcnn_class_logits.cuda(device=self.device)
+                            mrcnn_class = mrcnn_class.cuda(device=self.device)
+                            mrcnn_bbox = mrcnn_bbox.cuda(device=self.device)
+                            mrcnn_mask = mrcnn_mask.cuda(device=self.device)
+                    else:
+                        # Network Heads
+                        # Proposal classifier and BBox regressor heads
+                        mrcnn_feature_maps = [p2_out[i].unsqueeze(0),p3_out[i].unsqueeze(0),p4_out[i].unsqueeze(0),p5_out[i].unsqueeze(0)]
+                        mrcnn_class_logits, mrcnn_class, mrcnn_bbox = self.classifier(mrcnn_feature_maps, rois)
+
+                        # Create masks for detections
+                        mrcnn_mask = self.mask(mrcnn_feature_maps, rois)
                         
-                        # compute rpn_rois
-                        rpn_rois = proposal_generator([rpn_class, rpn_pred_bbox],
-                                 proposal_count=proposal_count,
-                                 nms_threshold=self.config.RPN_NMS_THRESHOLD,
-                                 anchors=self.anchors,
-                                 config=self.config)
                         
-                        # Normalize coordinates
-                        h, w = self.config.IMAGE_SHAPE[:2]
-                        scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
-                        if self.config.GPU_COUNT:
-                            scale = scale.cuda(device=self.device)
-                        gt_boxes = gt_boxes / scale
+                    # Compute losses
+                    rpn_class_loss, rpn_bbox_loss, mrcnn_class_loss, mrcnn_bbox_loss, mrcnn_mask_loss = compute_losses(rpn_match, rpn_bbox, rpn_class_logits, rpn_pred_bbox, target_class_ids, mrcnn_class_logits, target_deltas, mrcnn_bbox, target_mask, mrcnn_mask)
+                    img_loss = rpn_class_loss + rpn_bbox_loss + mrcnn_class_loss + mrcnn_bbox_loss + mrcnn_mask_loss
+                    loss=loss+img_loss
 
-                        # Generate detection targets
-                        # Subsamples proposals and generates target outputs for training
-                        # Note that proposal class IDs, gt_boxes, and gt_masks are zero
-                        # padded. Equally, returned rois and targets are zero padded.
-                        rois, target_class_ids, target_deltas, target_mask = \
-                            detection_target_layer(rpn_rois, gt_class_ids, gt_boxes, gt_masks, self.config)
-
-                        if not rois.size()[0]:
-                            mrcnn_class_logits = Variable(torch.FloatTensor())
-                            mrcnn_class = Variable(torch.IntTensor())
-                            mrcnn_bbox = Variable(torch.FloatTensor())
-                            mrcnn_mask = Variable(torch.FloatTensor())
-                            if self.config.GPU_COUNT:
-                                mrcnn_class_logits = mrcnn_class_logits.cuda(device=self.device)
-                                mrcnn_class = mrcnn_class.cuda(device=self.device)
-                                mrcnn_bbox = mrcnn_bbox.cuda(device=self.device)
-                                mrcnn_mask = mrcnn_mask.cuda(device=self.device)
-                        else:
-                            # Network Heads
-                            # Proposal classifier and BBox regressor heads
-                            mrcnn_feature_maps = [p2_out[i].unsqueeze(0),p3_out[i].unsqueeze(0),p4_out[i].unsqueeze(0),p5_out[i].unsqueeze(0)]
-                            mrcnn_class_logits, mrcnn_class, mrcnn_bbox = self.classifier(mrcnn_feature_maps, rois)
-
-                            # Create masks for detections
-                            mrcnn_mask = self.mask(mrcnn_feature_maps, rois)
-                            
-                            
-                        # Compute losses
-                        rpn_class_loss, rpn_bbox_loss, mrcnn_class_loss, mrcnn_bbox_loss, mrcnn_mask_loss = compute_losses(rpn_match, rpn_bbox, rpn_class_logits, rpn_pred_bbox, target_class_ids, mrcnn_class_logits, target_deltas, mrcnn_bbox, target_mask, mrcnn_mask)
-                        img_loss = rpn_class_loss + rpn_bbox_loss + mrcnn_class_loss + mrcnn_bbox_loss + mrcnn_mask_loss
-                        loss=loss+img_loss
                 loss=loss/BatchSize
                 loss.backward()
+
                 # TODO: need to find an appropriate number for 'clip' 
                 torch.nn.utils.clip_grad_norm_(self.parameters(), 5.0)
                 optimizer.step()
+
                 epoch_loss += loss.item()
-                print("===> Epoch[{}]({}/{}): Loss: {:.4f}".format(epoch, step, steps, loss.item()))
+                # print("===> Epoch[{}]({}/{}): Loss: {:.4f}".format(epoch, step, steps, loss.item()))
                 step=step+1
-                if step%epoch_len==0:
-                    print("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch, epoch_loss / steps))
-                    # save model
-                    torch.save(self.state_dict(), self.checkpoint_path.format(epoch))
-                    break
+                    
+            print("===> Epoch {} Training Complete: Avg. Loss: {:.4f}".format(epoch, epoch_loss / step))
+
+            # save model
+            torch.save(self.state_dict(), self.checkpoint_path.format(epoch))
+            self.loss_history.append(epoch_loss / step)
+
+            # online val - compute mAP
+            print('\n===> Epoch {} Eval'.format(epoch))
+            self.eval()
+
+            aps = []
+            val_image_ids = val_dataset.image_ids
+
+            for image_id in tqdm(val_image_ids):
+                image, image_meta, gt_class_id, gt_bbox, gt_mask = load_image_gt(
+                    val_dataset,
+                    self.config,
+                    image_id
+                )
+
+                results = self.detect([image])
+                if results is None:
+                    r = {'rois': [], 'class_ids': [], 'scores': [], 'masks': []}
+                else:
+                    r = results[0]
+
+                if len(r['class_ids']) == 0:
+                    # no pred bbox
+                    if len(gt_class_id) == 1 and gt_class_id[0] == 0:
+                        # also no gt bbox, no count, goto next image
+                        continue
+                    else:
+                        # got gt bbox, false-negative, count a 0
+                        aps.append(0.)
+                        continue
+                else:
+                    # got pred box
+                    if len(gt_class_id) == 1 and gt_class_id[0] == 0:
+                        # no gt bbox, false-positive, count a 0
+                        aps.append(0.)
+                        continue
+
+                ap = utils.compute_ap_range(
+                    gt_bbox,
+                    gt_class_id,
+                    gt_mask,
+                    r['rois'],
+                    r['class_ids'],
+                    r['scores'],
+                    r['masks'],
+                    iou_thresholds=[0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75]
+                )
+                aps.append(ap)
+
+            print('===> Epoch {} Eval Complete: mAP: {:.4f}'.format(epoch, np.mean(aps)))
+            self.val_map_history.append(np.mean(aps))
+
+            # save states
+            states = {
+                'loss_history': self.loss_history,
+                'val_map_history': self.val_map_history
+            }
+            torch.save(states, self.state_path)
 
         self.epoch = epochs
 

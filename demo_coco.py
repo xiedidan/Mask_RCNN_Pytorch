@@ -40,7 +40,7 @@ config = InferenceConfig()
 config.display()
 
 # Create model object.
-model = modellib.MaskRCNN(model_dir=MODEL_DIR, config=config)
+model = modellib.MaskRCNN(model_dir=MODEL_DIR, config=config, device=torch.device('cuda:0'))
 if config.GPU_COUNT:
     model = model.cuda()
 

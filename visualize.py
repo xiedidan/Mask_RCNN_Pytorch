@@ -16,6 +16,8 @@ from skimage.measure import find_contours
 import matplotlib.pyplot as plt
 if "DISPLAY" not in os.environ:
     plt.switch_backend('agg')
+else:
+    plt.switch_backend('tkagg')
 import matplotlib.patches as patches
 import matplotlib.lines as lines
 from matplotlib.patches import Polygon
